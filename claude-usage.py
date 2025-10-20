@@ -102,7 +102,7 @@ def calculate_model_breakdown(usage_data):
     return result
 
 
-def calculate_time_series(usage_data, interval_hours=8):
+def calculate_time_series(usage_data, interval_hours=3):
     """Calculate token usage over time in specified hour intervals (LA timezone)."""
     la_tz = pytz.timezone('America/Los_Angeles')
 
@@ -137,17 +137,43 @@ def calculate_time_series(usage_data, interval_hours=8):
     return time_series
 
 
-def print_line_chart(time_series, width=80, height=20):
+def print_line_chart(time_series, height=20):
     """Print a text-based line chart of token usage over time."""
     if not time_series:
         print("No time series data available.")
         return
 
     # Sort by time
-    sorted_times = sorted(time_series.keys())
+    all_sorted_times = sorted(time_series.keys())
+
+    if not all_sorted_times:
+        print("No data available.")
+        return
+
+    # Use all data (don't discard incomplete first day)
+    first_time = all_sorted_times[0]
+    last_time = all_sorted_times[-1]
+
+    # Round first_time down to nearest 3-hour interval
+    first_hour = (first_time.hour // 3) * 3
+    first_time_rounded = first_time.replace(hour=first_hour, minute=0, second=0, microsecond=0)
+
+    # Create a complete continuous time series (every 3 hours)
+    # This ensures uniform spacing even when there's no data
+    sorted_times = []
+    current_time = first_time_rounded
+    while current_time <= last_time:
+        sorted_times.append(current_time)
+        current_time += timedelta(hours=3)
 
     if len(sorted_times) < 2:
         print("Not enough data points for chart.")
+        return
+
+    # Check if chart would be too wide (max 500 columns)
+    if len(sorted_times) > 500:
+        print(f"Warning: Too many data points ({len(sorted_times)}). Maximum is 500.")
+        print("Consider using a longer time interval or limiting the time range.")
         return
 
     # Get all models
@@ -155,32 +181,56 @@ def print_line_chart(time_series, width=80, height=20):
     for models in time_series.values():
         all_models.update(models.keys())
 
-    # Calculate totals per time interval
+    # Calculate totals per time interval (use 0 for missing data)
     totals = []
     for time in sorted_times:
-        total = sum(time_series[time].values()) / 1000  # Convert to KTok
+        if time in time_series:
+            total = sum(time_series[time].values()) / 1000  # Convert to KTok
+        else:
+            total = 0.0  # No data for this interval
         totals.append(total)
 
     max_value = max(totals) if totals else 1
     min_value = min(totals) if totals else 0
 
-    print("\nToken Usage Over Time (8-hour intervals, LA Time)")
-    print("=" * width)
-    print(f"Y-axis: Token consumption (KTok)")
-    print(f"X-axis: Time\n")
-
-    # Chart characters
-    chart_width = width - 20  # Reserve space for Y-axis labels
+    num_data_points = len(totals)
     chart_height = height
+
+    print("\nToken Usage Over Time (3-hour intervals, LA Time)")
+    print(f"Y-axis: Token consumption (KTok)")
+    print(f"X-axis: Time (each day has 8 data points, ticks at 6-hour intervals)\n")
 
     # Scale values to chart height
     if max_value == min_value:
-        scaled_values = [chart_height // 2] * len(totals)
+        scaled_values = [chart_height // 2] * num_data_points
     else:
         scaled_values = [
             int((val - min_value) / (max_value - min_value) * (chart_height - 1))
             for val in totals
         ]
+
+    # Build chart:
+    # First day: 8 data points (no separator, Y-axis serves as the boundary)
+    # Subsequent days: separator + 8 data points
+    chart_columns = []  # List of (type, value)
+    data_to_col = {}  # Map data point index to column index
+
+    col_idx = 0
+    for i in range(num_data_points):
+        time = sorted_times[i]
+
+        # Add separator before 00:00 (except for the very first day)
+        if time.hour == 0 and time.minute == 0 and i > 0:
+            chart_columns.append(('separator', None))
+            col_idx += 1
+
+        # Add data point
+        chart_columns.append(('data', i))
+        data_to_col[i] = col_idx
+        col_idx += 1
+
+    chart_width = len(chart_columns)
+    print("=" * (chart_width + 10))
 
     # Draw chart from top to bottom
     for row in range(chart_height - 1, -1, -1):
@@ -190,26 +240,70 @@ def print_line_chart(time_series, width=80, height=20):
 
         # Chart line
         line = ""
-        for i, scaled_val in enumerate(scaled_values):
-            if scaled_val == row:
-                line += "●"
-            elif i > 0 and min(scaled_values[i-1], scaled_val) <= row <= max(scaled_values[i-1], scaled_val):
+        prev_val = None
+        for col_type, col_data in chart_columns:
+            if col_type == 'separator':
                 line += "│"
             else:
-                line += " "
+                data_idx = col_data
+                val = scaled_values[data_idx]
+
+                if val == row:
+                    line += "●"
+                elif prev_val is not None and min(prev_val, val) <= row <= max(prev_val, val):
+                    line += "│"
+                else:
+                    line += " "
+
+                prev_val = val
 
         print(y_label + line)
 
-    # X-axis
-    print("       └" + "─" * len(scaled_values))
+    # X-axis with day separators
+    x_axis_line = ""
+    for col_type, _ in chart_columns:
+        if col_type == 'separator':
+            x_axis_line += "┴"
+        else:
+            x_axis_line += "─"
+    print("       └" + x_axis_line)
 
-    # X-axis labels (show first, middle, and last)
-    print(f"\n       {sorted_times[0].strftime('%m/%d %H:%M')}", end="")
-    if len(sorted_times) > 2:
-        mid_idx = len(sorted_times) // 2
-        spacing = " " * (mid_idx - 10)
-        print(f"{spacing}{sorted_times[mid_idx].strftime('%m/%d %H:%M')}", end="")
-    print(f"{' ' * 10}{sorted_times[-1].strftime('%m/%d %H:%M')}")
+    # X-axis labels (show only 6:00, 12:00, and 18:00) - rotated 90 degrees counter-clockwise
+    print()
+
+    # Create label for 6:00, 12:00, and 18:00
+    labels = []
+    positions = []
+
+    for i, time in enumerate(sorted_times):
+        # Only show labels for 6:00, 12:00, and 18:00
+        if time.hour in [6, 12, 18]:
+            # Position is the column index for this data point
+            if i in data_to_col:
+                labels.append(time.strftime('%m/%d %H:%M'))
+                positions.append(data_to_col[i])
+
+    # Find maximum label length
+    max_label_len = max(len(label) for label in labels) if labels else 0
+
+    # Print each character position vertically
+    for char_idx in range(max_label_len):
+        line = "        "  # Indent to align with chart (one extra space for first day alignment)
+
+        for col_idx, (col_type, col_data) in enumerate(chart_columns):
+            if col_type == 'separator':
+                char_to_print = "│"
+            else:
+                # Check if this column has a label
+                char_to_print = " "
+                for label_idx, pos in enumerate(positions):
+                    if col_idx == pos and char_idx < len(labels[label_idx]):
+                        char_to_print = labels[label_idx][char_idx]
+                        break
+
+            line += char_to_print
+
+        print(line)
 
     # Legend - show models and their totals
     print(f"\nTotal time span: {sorted_times[0].strftime('%Y-%m-%d %H:%M')} to {sorted_times[-1].strftime('%Y-%m-%d %H:%M')}")
@@ -334,7 +428,7 @@ def main():
     print_model_breakdown(model_stats)
 
     # Calculate and print time series
-    time_series = calculate_time_series(usage_data, interval_hours=8)
+    time_series = calculate_time_series(usage_data, interval_hours=3)
     print_line_chart(time_series)
     print_model_chart(time_series)
 
