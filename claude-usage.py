@@ -176,6 +176,46 @@ def calculate_all_tokens_time_series(usage_data, interval_hours=1):
     return time_series
 
 
+def calculate_token_breakdown_time_series(usage_data, interval_hours=1):
+    """Calculate token usage breakdown (input/output/cache_creation/cache_read) over time in specified hour intervals (LA timezone)."""
+    la_tz = pytz.timezone('America/Los_Angeles')
+
+    # Group by time interval with breakdown
+    time_series = defaultdict(lambda: {
+        'input': 0,
+        'output': 0,
+        'cache_creation': 0,
+        'cache_read': 0
+    })
+
+    for entry in usage_data:
+        timestamp_str = entry.get('timestamp')
+        if not timestamp_str:
+            continue
+
+        try:
+            # Parse ISO timestamp and convert to LA timezone
+            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            timestamp_la = timestamp.astimezone(la_tz)
+
+            # Round down to the nearest interval
+            hour = timestamp_la.hour
+            interval_hour = (hour // interval_hours) * interval_hours
+            interval_time = timestamp_la.replace(hour=interval_hour, minute=0, second=0, microsecond=0)
+
+            usage = entry['message']['usage']
+
+            # Accumulate each token type separately
+            time_series[interval_time]['input'] += usage.get('input_tokens', 0)
+            time_series[interval_time]['output'] += usage.get('output_tokens', 0)
+            time_series[interval_time]['cache_creation'] += usage.get('cache_creation_input_tokens', 0)
+            time_series[interval_time]['cache_read'] += usage.get('cache_read_input_tokens', 0)
+        except Exception:
+            continue
+
+    return time_series
+
+
 def format_y_axis_value(value):
     """Format Y-axis value to always be 5 characters with K/M units."""
     if value >= 1_000_000:
@@ -235,8 +275,8 @@ def format_total_value(value):
         return f"{int(value)}"
 
 
-def print_line_chart(time_series, height=50, days_back=7):
-    """Print a text-based line chart of token usage over time."""
+def print_stacked_bar_chart(time_series, height=50, days_back=7):
+    """Print a text-based stacked bar chart of token usage breakdown over time."""
     if not time_series:
         print("No time series data available.")
         return
@@ -277,19 +317,25 @@ def print_line_chart(time_series, height=50, days_back=7):
         step = max(1, len(sorted_times) // 500)
         sorted_times = sorted_times[::step]
 
-    # Get all models
-    all_models = set()
-    for models in time_series.values():
-        all_models.update(models.keys())
-
-    # Calculate totals per time interval (use 0 for missing data)
+    # Calculate breakdown per time interval
+    breakdown_data = []
     totals = []
     for time in sorted_times:
         if time in time_series:
-            total = sum(time_series[time].values())  # Keep as tokens (not KTok)
+            input_val = time_series[time].get('input', 0)
+            output_val = time_series[time].get('output', 0)
+            cache_creation_val = time_series[time].get('cache_creation', 0)
+            cache_read_val = time_series[time].get('cache_read', 0)
         else:
-            total = 0.0  # No data for this interval
-        totals.append(total)
+            input_val = output_val = cache_creation_val = cache_read_val = 0
+
+        breakdown_data.append({
+            'input': input_val,
+            'output': output_val,
+            'cache_creation': cache_creation_val,
+            'cache_read': cache_read_val
+        })
+        totals.append(input_val + output_val + cache_creation_val + cache_read_val)
 
     # First pass: calculate Y-axis range from all data
     max_value_raw = max(totals) if totals else 1
@@ -323,22 +369,33 @@ def print_line_chart(time_series, height=50, days_back=7):
     num_data_points = len(totals)
     chart_height = height
 
-    print("\nToken Usage Over Time - Input + Output Only (1-hour intervals, LA Time)")
-    print(f"Y-axis: Token consumption")
+    print("\nToken Usage Breakdown Over Time (1-hour intervals, LA Time)")
+    print(f"Y-axis: Token consumption (all token types)")
     print(f"X-axis: Time (each day has 24 data points, ticks at 6-hour intervals)\n")
 
-    # Scale values to chart height
-    if max_value == min_value:
-        scaled_values = [chart_height // 2] * num_data_points
-    else:
-        scaled_values = [
-            int((val - min_value) / (max_value - min_value) * (chart_height - 1))
-            for val in totals
-        ]
+    # Scale breakdown values to chart height
+    # For each data point, calculate the scaled heights of each segment
+    scaled_breakdown = []
+    for breakdown in breakdown_data:
+        if max_value == min_value:
+            scaled_breakdown.append({
+                'input': 0,
+                'output': 0,
+                'cache_creation': 0,
+                'cache_read': 0
+            })
+        else:
+            # Scale each component individually
+            scaled_breakdown.append({
+                'input': int((breakdown['input'] - 0) / (max_value - min_value) * (chart_height - 1)),
+                'output': int((breakdown['output'] - 0) / (max_value - min_value) * (chart_height - 1)),
+                'cache_creation': int((breakdown['cache_creation'] - 0) / (max_value - min_value) * (chart_height - 1)),
+                'cache_read': int((breakdown['cache_read'] - 0) / (max_value - min_value) * (chart_height - 1))
+            })
 
     # Build chart:
-    # First day: 8 data points (no separator, Y-axis serves as the boundary)
-    # Subsequent days: separator + 8 data points
+    # First day: data points (no separator, Y-axis serves as the boundary)
+    # Subsequent days: separator + data points
     chart_columns = []  # List of (type, value)
     data_to_col = {}  # Map data point index to column index
 
@@ -389,18 +446,24 @@ def print_line_chart(time_series, height=50, days_back=7):
     # Print daily totals at top of chart
     total_line = " " * 7  # Align with Y-axis
     prev_end = 0
-    for mid_col, total, day_start in daily_totals:
+    chinese_chars = "我必须立刻学习"
+    for day_idx, (mid_col, total, day_start) in enumerate(daily_totals):
         total_str = format_total_value(total)
+        # Add Chinese character cycling through the string
+        char_idx = day_idx % len(chinese_chars)
+        chinese_char = chinese_chars[char_idx]
+        total_with_char = f"{chinese_char} : {total_str}"
+
         # Center the total string around mid_col
-        start_pos = mid_col - len(total_str) // 2
+        start_pos = mid_col - len(total_with_char) // 2
         padding = start_pos - prev_end
         if padding > 0:
             total_line += " " * padding
-        total_line += total_str
-        prev_end = start_pos + len(total_str)
+        total_line += total_with_char
+        prev_end = start_pos + len(total_with_char)
     print(total_line)
 
-    # Draw chart from top to bottom (bar chart style)
+    # Draw chart from top to bottom (stacked bar chart style)
     for row in range(chart_height - 1, -1, -1):
         # Y-axis label
         y_val = min_value + (max_value - min_value) * row / (chart_height - 1)
@@ -413,13 +476,31 @@ def print_line_chart(time_series, height=50, days_back=7):
                 line += "│"
             else:
                 data_idx = col_data
-                val = scaled_values[data_idx]
+                breakdown = scaled_breakdown[data_idx]
 
-                # Bar chart: show █ if this row is at or below the value
-                if val >= row:
-                    line += "█"
+                # Calculate cumulative heights for stacking (bottom to top)
+                # Stack order: input (bottom) -> output -> cache_creation -> cache_read (top)
+                input_height = breakdown['input']
+                output_height = breakdown['output']
+                cache_creation_height = breakdown['cache_creation']
+                cache_read_height = breakdown['cache_read']
+
+                cumulative_input = input_height
+                cumulative_output = cumulative_input + output_height
+                cumulative_cache_creation = cumulative_output + cache_creation_height
+                cumulative_cache_read = cumulative_cache_creation + cache_read_height
+
+                # Determine which character to draw based on current row
+                if row < cumulative_input:
+                    line += "█"  # Input tokens
+                elif row < cumulative_output:
+                    line += "▓"  # Output tokens
+                elif row < cumulative_cache_creation:
+                    line += "▒"  # Cache creation tokens
+                elif row < cumulative_cache_read:
+                    line += "░"  # Cache read tokens
                 else:
-                    line += " "
+                    line += " "  # Empty space
 
         print(y_label + line)
 
@@ -472,7 +553,13 @@ def print_line_chart(time_series, height=50, days_back=7):
 
         print(line)
 
-    # Legend - show models and their totals
+    # Legend - show token types and their symbols
+    print("\n" + "=" * (chart_width + 10))
+    print("\nLegend (stacked from bottom to top):")
+    print(f"  █ Input tokens")
+    print(f"  ▓ Output tokens")
+    print(f"  ▒ Cache creation tokens")
+    print(f"  ░ Cache read tokens")
     print(f"\nTotal time span: {sorted_times[0].strftime('%Y-%m-%d %H:%M')} to {sorted_times[-1].strftime('%Y-%m-%d %H:%M')}")
     print(f"Data points: {len(sorted_times)}")
 
@@ -601,19 +688,10 @@ def main():
     model_stats = calculate_model_breakdown(usage_data)
     print_model_breakdown(model_stats)
 
-    # Calculate and print time series (input + output only)
+    # Calculate and print token breakdown time series (stacked bar chart)
     # Use 1-hour intervals for finer granularity
-    time_series = calculate_time_series(usage_data, interval_hours=1)
-    print_line_chart(time_series, days_back=args.days)
-    print_model_chart(time_series)
-
-    # Calculate and print ALL tokens time series (input + output + cache create + cache read)
-    all_tokens_time_series = calculate_all_tokens_time_series(usage_data, interval_hours=1)
-    print("\n\n")
-    print("=" * 80)
-    print("ALL TOKENS (Input + Output + Cache Creation + Cache Read)")
-    print("=" * 80)
-    print_line_chart(all_tokens_time_series, days_back=args.days)
+    breakdown_time_series = calculate_token_breakdown_time_series(usage_data, interval_hours=1)
+    print_stacked_bar_chart(breakdown_time_series, days_back=args.days)
 
     print()
 
