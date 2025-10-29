@@ -8,12 +8,6 @@ from collections import defaultdict
 import sys
 import argparse
 
-try:
-    import pytz
-except ImportError:
-    print("Error: pytz is required. Install with: pip install pytz")
-    sys.exit(1)
-
 
 def get_claude_dir():
     """Get Claude configuration directory."""
@@ -97,6 +91,7 @@ def calculate_model_breakdown(usage_data):
     for model, stats in model_stats.items():
         stats['model'] = model
         stats['total'] = stats['input'] + stats['output']
+        stats['total_with_cache'] = stats['input'] + stats['output'] + stats['cache_creation'] + stats['cache_read']
         result.append(stats)
 
     result.sort(key=lambda x: x['total'], reverse=True)
@@ -104,8 +99,9 @@ def calculate_model_breakdown(usage_data):
 
 
 def calculate_time_series(usage_data, interval_hours=1):
-    """Calculate token usage over time in specified hour intervals (LA timezone)."""
-    la_tz = pytz.timezone('America/Los_Angeles')
+    """Calculate token usage over time in specified hour intervals (local timezone)."""
+    # Get local timezone automatically
+    local_tz = datetime.now().astimezone().tzinfo
 
     # Group by time interval and model
     time_series = defaultdict(lambda: defaultdict(int))
@@ -116,14 +112,14 @@ def calculate_time_series(usage_data, interval_hours=1):
             continue
 
         try:
-            # Parse ISO timestamp and convert to LA timezone
+            # Parse ISO timestamp and convert to local timezone
             timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            timestamp_la = timestamp.astimezone(la_tz)
+            timestamp_local = timestamp.astimezone(local_tz)
 
             # Round down to the nearest interval
-            hour = timestamp_la.hour
+            hour = timestamp_local.hour
             interval_hour = (hour // interval_hours) * interval_hours
-            interval_time = timestamp_la.replace(hour=interval_hour, minute=0, second=0, microsecond=0)
+            interval_time = timestamp_local.replace(hour=interval_hour, minute=0, second=0, microsecond=0)
 
             model = entry['message'].get('model', 'unknown')
             usage = entry['message']['usage']
@@ -139,8 +135,9 @@ def calculate_time_series(usage_data, interval_hours=1):
 
 
 def calculate_all_tokens_time_series(usage_data, interval_hours=1):
-    """Calculate ALL token usage (input + output + cache) over time in specified hour intervals (LA timezone)."""
-    la_tz = pytz.timezone('America/Los_Angeles')
+    """Calculate ALL token usage (input + output + cache) over time in specified hour intervals (local timezone)."""
+    # Get local timezone automatically
+    local_tz = datetime.now().astimezone().tzinfo
 
     # Group by time interval (all models combined)
     time_series = defaultdict(lambda: defaultdict(int))
@@ -151,14 +148,14 @@ def calculate_all_tokens_time_series(usage_data, interval_hours=1):
             continue
 
         try:
-            # Parse ISO timestamp and convert to LA timezone
+            # Parse ISO timestamp and convert to local timezone
             timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            timestamp_la = timestamp.astimezone(la_tz)
+            timestamp_local = timestamp.astimezone(local_tz)
 
             # Round down to the nearest interval
-            hour = timestamp_la.hour
+            hour = timestamp_local.hour
             interval_hour = (hour // interval_hours) * interval_hours
-            interval_time = timestamp_la.replace(hour=interval_hour, minute=0, second=0, microsecond=0)
+            interval_time = timestamp_local.replace(hour=interval_hour, minute=0, second=0, microsecond=0)
 
             usage = entry['message']['usage']
 
@@ -177,8 +174,9 @@ def calculate_all_tokens_time_series(usage_data, interval_hours=1):
 
 
 def calculate_token_breakdown_time_series(usage_data, interval_hours=1):
-    """Calculate token usage breakdown (input/output/cache_creation/cache_read) over time in specified hour intervals (LA timezone)."""
-    la_tz = pytz.timezone('America/Los_Angeles')
+    """Calculate token usage breakdown (input/output/cache_creation/cache_read) over time in specified hour intervals (local timezone)."""
+    # Get local timezone automatically
+    local_tz = datetime.now().astimezone().tzinfo
 
     # Group by time interval with breakdown
     time_series = defaultdict(lambda: {
@@ -194,14 +192,14 @@ def calculate_token_breakdown_time_series(usage_data, interval_hours=1):
             continue
 
         try:
-            # Parse ISO timestamp and convert to LA timezone
+            # Parse ISO timestamp and convert to local timezone
             timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            timestamp_la = timestamp.astimezone(la_tz)
+            timestamp_local = timestamp.astimezone(local_tz)
 
             # Round down to the nearest interval
-            hour = timestamp_la.hour
+            hour = timestamp_local.hour
             interval_hour = (hour // interval_hours) * interval_hours
-            interval_time = timestamp_la.replace(hour=interval_hour, minute=0, second=0, microsecond=0)
+            interval_time = timestamp_local.replace(hour=interval_hour, minute=0, second=0, microsecond=0)
 
             usage = entry['message']['usage']
 
@@ -275,7 +273,7 @@ def format_total_value(value):
         return f"{int(value)}"
 
 
-def print_stacked_bar_chart(time_series, height=50, days_back=7):
+def print_stacked_bar_chart(time_series, height=80, days_back=7):
     """Print a text-based stacked bar chart of token usage breakdown over time."""
     if not time_series:
         print("No time series data available.")
@@ -369,7 +367,7 @@ def print_stacked_bar_chart(time_series, height=50, days_back=7):
     num_data_points = len(totals)
     chart_height = height
 
-    print("\nToken Usage Breakdown Over Time (1-hour intervals, LA Time)")
+    print("\nToken Usage Breakdown Over Time (1-hour intervals, Local Time)")
     print(f"Y-axis: Token consumption (all token types)")
     print(f"X-axis: Time (each day has 24 data points, ticks at 6-hour intervals)\n")
 
@@ -443,25 +441,55 @@ def print_stacked_bar_chart(time_series, height=50, days_back=7):
         mid_col = (current_day_start_col + len(chart_columns)) // 2
         daily_totals.append((mid_col, current_day_total, current_day_start))
 
-    # Print daily totals at top of chart
-    total_line = " " * 7  # Align with Y-axis
+    # Print daily totals at top of chart (weekday + total tokens)
+    weekday_line = " " * 7  # Align with Y-axis
+    date_line = " " * 7  # Align with Y-axis
     prev_end = 0
-    chinese_chars = "我必须立刻学习"
+
+    weekday_abbr = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
     for day_idx, (mid_col, total, day_start) in enumerate(daily_totals):
         total_str = format_total_value(total)
-        # Add Chinese character cycling through the string
-        char_idx = day_idx % len(chinese_chars)
-        chinese_char = chinese_chars[char_idx]
-        total_with_char = f"{chinese_char} : {total_str}"
+        weekday = weekday_abbr[day_start.weekday()]
+        weekday_total = f"{weekday} : {total_str}"
 
-        # Center the total string around mid_col
-        start_pos = mid_col - len(total_with_char) // 2
+        # Format date as " MM / DD"
+        date_str = day_start.strftime(' %m / %d')
+
+        # Find positions of : and /
+        colon_idx = weekday_total.index(':')
+        slash_idx = date_str.index('/')
+
+        # Add padding to align : and / at the same relative position
+        if colon_idx > slash_idx:
+            # Add spaces before date_str
+            date_str = ' ' * (colon_idx - slash_idx) + date_str
+            slash_idx = colon_idx
+        elif slash_idx > colon_idx:
+            # Add spaces before weekday_total
+            weekday_total = ' ' * (slash_idx - colon_idx) + weekday_total
+            colon_idx = slash_idx
+
+        # Make both strings the same length
+        max_len = max(len(weekday_total), len(date_str))
+        weekday_total = weekday_total.ljust(max_len)
+        date_str = date_str.ljust(max_len)
+
+        # Position them so : and / are at mid_col
+        start_pos = mid_col - colon_idx
+
+        # Add padding and content to both lines
         padding = start_pos - prev_end
         if padding > 0:
-            total_line += " " * padding
-        total_line += total_with_char
-        prev_end = start_pos + len(total_with_char)
-    print(total_line)
+            weekday_line += " " * padding
+            date_line += " " * padding
+
+        weekday_line += weekday_total
+        date_line += date_str
+        prev_end = start_pos + max_len
+
+    print(weekday_line)
+    print(date_line)
 
     # Draw chart from top to bottom (stacked bar chart style)
     for row in range(chart_height - 1, -1, -1):
@@ -491,14 +519,15 @@ def print_stacked_bar_chart(time_series, height=50, days_back=7):
                 cumulative_cache_read = cumulative_cache_creation + cache_read_height
 
                 # Determine which character to draw based on current row
+                # ANSI color codes: Blue for input, Green for output, Yellow for cache_creation, Cyan for cache_read
                 if row < cumulative_input:
-                    line += "█"  # Input tokens
+                    line += "\033[94m█\033[0m"  # Input tokens (Blue)
                 elif row < cumulative_output:
-                    line += "▓"  # Output tokens
+                    line += "\033[92m▓\033[0m"  # Output tokens (Green)
                 elif row < cumulative_cache_creation:
-                    line += "▒"  # Cache creation tokens
+                    line += "\033[93m▒\033[0m"  # Cache creation tokens (Yellow)
                 elif row < cumulative_cache_read:
-                    line += "░"  # Cache read tokens
+                    line += "\033[96m░\033[0m"  # Cache read tokens (Cyan)
                 else:
                     line += " "  # Empty space
 
@@ -526,7 +555,7 @@ def print_stacked_bar_chart(time_series, height=50, days_back=7):
         if time.hour in [6, 12, 18]:
             # Position is the column index for this data point
             if i in data_to_col:
-                labels.append(time.strftime('%m/%d %H:%M'))
+                labels.append(time.strftime('%H'))
                 positions.append(data_to_col[i])
 
     # Find maximum label length
@@ -553,13 +582,13 @@ def print_stacked_bar_chart(time_series, height=50, days_back=7):
 
         print(line)
 
-    # Legend - show token types and their symbols
+    # Legend - show token types and their symbols (with colors)
     print("\n" + "=" * (chart_width + 10))
     print("\nLegend (stacked from bottom to top):")
-    print(f"  █ Input tokens")
-    print(f"  ▓ Output tokens")
-    print(f"  ▒ Cache creation tokens")
-    print(f"  ░ Cache read tokens")
+    print(f"  \033[94m█\033[0m Input tokens")
+    print(f"  \033[92m▓\033[0m Output tokens")
+    print(f"  \033[93m▒\033[0m Cache creation tokens")
+    print(f"  \033[96m░\033[0m Cache read tokens")
     print(f"\nTotal time span: {sorted_times[0].strftime('%Y-%m-%d %H:%M')} to {sorted_times[-1].strftime('%Y-%m-%d %H:%M')}")
     print(f"Data points: {len(sorted_times)}")
 
@@ -635,25 +664,54 @@ def print_overall_stats(stats):
 
 def print_model_breakdown(model_stats):
     """Print model breakdown table."""
-    print("\n\n")
     print("Usage by Model")
-    print("=" * 120)
+    print("=" * 151)
 
     # Print header
-    header = f"{'Model':<35} {'Messages':>10} {'Input':>15} {'Output':>15} {'Cache Create':>15} {'Cache Read':>15} {'Total':>15}"
+    header = f"{'Model':<35} {'Messages':>10} │ {'Input':>15} {'Output':>15} {'Total Token':>15} │ {'Cache Create':>15} {'Cache Read':>15} {'Total (with cache)':>19}"
     print(header)
-    print("-" * 120)
+    print("-" * 151)
 
-    # Print rows
+    # Print rows and calculate sums
+    sum_messages = 0
+    sum_input = 0
+    sum_output = 0
+    sum_total = 0
+    sum_cache_creation = 0
+    sum_cache_read = 0
+    sum_total_with_cache = 0
+
     for stats in model_stats:
         row = (f"{stats['model']:<35} "
-               f"{stats['count']:>10} "
+               f"{stats['count']:>10} │ "
                f"{format_number(stats['input']):>15} "
                f"{format_number(stats['output']):>15} "
+               f"{format_number(stats['total']):>15} │ "
                f"{format_number(stats['cache_creation']):>15} "
                f"{format_number(stats['cache_read']):>15} "
-               f"{format_number(stats['total']):>15}")
+               f"{format_number(stats['total_with_cache']):>19}")
         print(row)
+
+        # Accumulate sums
+        sum_messages += stats['count']
+        sum_input += stats['input']
+        sum_output += stats['output']
+        sum_total += stats['total']
+        sum_cache_creation += stats['cache_creation']
+        sum_cache_read += stats['cache_read']
+        sum_total_with_cache += stats['total_with_cache']
+
+    # Print separator and sum row
+    print("-" * 151)
+    sum_row = (f"{'TOTAL':<35} "
+               f"{sum_messages:>10} │ "
+               f"{format_number(sum_input):>15} "
+               f"{format_number(sum_output):>15} "
+               f"{format_number(sum_total):>15} │ "
+               f"{format_number(sum_cache_creation):>15} "
+               f"{format_number(sum_cache_read):>15} "
+               f"{format_number(sum_total_with_cache):>19}")
+    print(sum_row)
 
 
 def main():
@@ -682,9 +740,6 @@ def main():
         sys.exit(0)
 
     # Calculate and print statistics
-    overall_stats = calculate_overall_stats(usage_data)
-    print_overall_stats(overall_stats)
-
     model_stats = calculate_model_breakdown(usage_data)
     print_model_breakdown(model_stats)
 
