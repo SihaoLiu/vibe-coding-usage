@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Usage Indicator
+Comment=Display Claude Code token usage in system tray
+Exec=/home/USER/playground/claude-experimental/claude-tray-indicator.py
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
