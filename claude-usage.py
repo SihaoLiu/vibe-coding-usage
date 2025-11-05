@@ -550,13 +550,13 @@ def print_stacked_bar_chart(time_series, height=80, days_back=7, chart_type='all
                 cumulative_cache_read = cumulative_cache_creation + cache_read_height
 
                 # Determine which character to draw based on current row and chart_type
-                # ANSI color codes: Blue for input, Green for output, Yellow for cache_output, Magenta for cache_input
+                # ANSI 256-color codes: Cyan for input, Green for output, Orange for cache_output, Pink for cache_input
                 if chart_type == 'io':
                     # Only show input and output
                     if row < cumulative_input:
-                        line += "\033[94m█\033[0m"  # Input tokens (Bright Blue)
+                        line += "\033[38;5;51m█\033[0m"  # Input tokens (Bright Cyan)
                     elif row < cumulative_output:
-                        line += "\033[92m▓\033[0m"  # Output tokens (Bright Green)
+                        line += "\033[38;5;46m▓\033[0m"  # Output tokens (Bright Green)
                     else:
                         line += " "  # Empty space
                 elif chart_type == 'cache':
@@ -564,21 +564,21 @@ def print_stacked_bar_chart(time_series, height=80, days_back=7, chart_type='all
                     cache_only_cumulative_creation = cache_creation_height
                     cache_only_cumulative_read = cache_only_cumulative_creation + cache_read_height
                     if row < cache_only_cumulative_creation:
-                        line += "\033[93m▒\033[0m"  # Cache output tokens (Bright Yellow)
+                        line += "\033[38;5;214m▒\033[0m"  # Cache output tokens (Bright Orange)
                     elif row < cache_only_cumulative_read:
-                        line += "\033[95m░\033[0m"  # Cache input tokens (Bright Magenta)
+                        line += "█"  # Cache input tokens (default color)
                     else:
                         line += " "  # Empty space
                 else:
                     # Show all 4 types
                     if row < cumulative_input:
-                        line += "\033[94m█\033[0m"  # Input tokens (Bright Blue)
+                        line += "\033[38;5;51m█\033[0m"  # Input tokens (Bright Cyan)
                     elif row < cumulative_output:
-                        line += "\033[92m▓\033[0m"  # Output tokens (Bright Green)
+                        line += "\033[38;5;46m▓\033[0m"  # Output tokens (Bright Green)
                     elif row < cumulative_cache_creation:
-                        line += "\033[93m▒\033[0m"  # Cache output tokens (Bright Yellow)
+                        line += "\033[38;5;214m▒\033[0m"  # Cache output tokens (Bright Orange)
                     elif row < cumulative_cache_read:
-                        line += "\033[95m░\033[0m"  # Cache input tokens (Bright Magenta)
+                        line += "█░"  # Cache input tokens (default color)
                     else:
                         line += " "  # Empty space
 
@@ -639,7 +639,7 @@ def print_stacked_bar_chart(time_series, height=80, days_back=7, chart_type='all
     if show_x_axis:
         print("\n" + "=" * (chart_width + 10))
         print(f"Total time span: {sorted_times[0].strftime('%Y-%m-%d %H:%M')} to {sorted_times[-1].strftime('%Y-%m-%d %H:%M')} | Data points: {len(sorted_times)}")
-        print(f"Legend: \033[94m█\033[0m Input  \033[92m▓\033[0m Output  \033[95m░\033[0m Cache Input  \033[93m▒\033[0m Cache Output")
+        print(f"Legend: \033[38;5;51m█\033[0m Input  \033[38;5;46m▓\033[0m Output  █ Cache Input  \033[38;5;214m▒\033[0m Cache Output")
 
 
 def print_model_chart(time_series, width=100, height=20):
@@ -694,6 +694,51 @@ def print_model_chart(time_series, width=100, height=20):
                 time_str = sorted_times[i].strftime('%m/%d %H:%M')
                 bar = model_symbols[model] * bar_length
                 print(f"  {time_str} │{bar} {val:.1f}")
+
+
+def filter_usage_data_by_days(usage_data, days_back):
+    """Filter usage data to only include entries from the last N days."""
+    if not usage_data:
+        return []
+
+    # Get local timezone automatically
+    local_tz = datetime.now().astimezone().tzinfo
+
+    # Find the latest timestamp in the data
+    latest_time = None
+    for entry in usage_data:
+        timestamp_str = entry.get('timestamp')
+        if timestamp_str:
+            try:
+                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                timestamp_local = timestamp.astimezone(local_tz)
+                if latest_time is None or timestamp_local > latest_time:
+                    latest_time = timestamp_local
+            except Exception:
+                continue
+
+    if latest_time is None:
+        return usage_data
+
+    # Calculate start time based on days_back
+    start_time = latest_time - timedelta(days=days_back)
+
+    # Filter data
+    filtered_data = []
+    for entry in usage_data:
+        timestamp_str = entry.get('timestamp')
+        if not timestamp_str:
+            continue
+
+        try:
+            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            timestamp_local = timestamp.astimezone(local_tz)
+            if timestamp_local >= start_time:
+                filtered_data.append(entry)
+        except Exception:
+            continue
+
+    return filtered_data
 
 
 def print_overall_stats(stats):
@@ -800,13 +845,20 @@ def main():
             print("No usage data found.")
             return False
 
-        # Calculate and print statistics
-        model_stats = calculate_model_breakdown(usage_data)
+        # Filter data based on days parameter
+        filtered_usage_data = filter_usage_data_by_days(usage_data, args.days)
+
+        if not filtered_usage_data:
+            print(f"No usage data found in the last {args.days} days.")
+            return False
+
+        # Calculate and print statistics using filtered data
+        model_stats = calculate_model_breakdown(filtered_usage_data)
         print_model_breakdown(model_stats)
 
         # Calculate and print token breakdown time series (stacked bar charts)
         # Use 1-hour intervals for finer granularity
-        breakdown_time_series = calculate_token_breakdown_time_series(usage_data, interval_hours=1)
+        breakdown_time_series = calculate_token_breakdown_time_series(filtered_usage_data, interval_hours=1)
 
         # Print two separate charts: I/O tokens and Cache tokens
         # Each with half the original height (40 instead of 80)
