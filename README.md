@@ -4,12 +4,15 @@ A collection of tools for monitoring and visualizing Claude Code API usage stati
 
 ## Overview
 
-This repository provides two complementary tools for tracking Claude Code token consumption:
+This repository provides three complementary tools for tracking Claude Code usage:
 
-1. **`claude-usage.py`** - A comprehensive command-line analyzer that generates detailed reports with ASCII charts showing token usage over time
-2. **`claude-tray-indicator.py`** - A lightweight GNOME system tray indicator that displays real-time daily token statistics
+1. **`claude-usage.py`** - A comprehensive command-line analyzer that generates detailed reports with ASCII charts showing token usage over time (from local JSONL logs)
+2. **`claude-subscription-usage.py`** - Get real-time subscription quota usage by programmatically querying the Claude Code CLI
+3. **`claude-tray-indicator.py`** - A lightweight GNOME system tray indicator that displays real-time daily token statistics
 
-Both tools parse JSONL usage logs from `~/.claude/projects` to provide insights into your Claude Code consumption patterns.
+**Token-based tools** (`claude-usage.py` and `claude-tray-indicator.py`) parse JSONL usage logs from `~/.claude/projects` to provide insights into your historical token consumption patterns.
+
+**Subscription usage tool** (`claude-subscription-usage.py`) queries the live Claude Code CLI to retrieve your current subscription quota usage - the same information you see when running `/usage` in Claude Code.
 
 ## Features
 
@@ -40,6 +43,56 @@ python3 claude-usage.py --monitor
 python3 claude-usage.py --monitor 1800  # Refresh every 30 minutes
 ```
 
+### claude-subscription-usage.py
+
+- **Real-time Quota Information**: Get current session and weekly subscription usage percentages
+- **Multiple Output Formats**:
+  - Human-readable summary with progress bars
+  - Compact machine-readable format (key:value)
+  - Full raw output option
+- **Subscription Limits**: Shows session and weekly usage limits for Claude Max subscribers
+- **Reset Times**: Displays when your session and weekly quotas will reset
+- **Automated Access**: Programmatically query the same `/usage` data you see in Claude Code
+
+**Usage:**
+```bash
+# Basic usage (human-readable summary)
+python3 claude-subscription-usage.py
+
+# Compact output for scripting/automation
+python3 claude-subscription-usage.py --compact
+
+# Verbose mode (show progress)
+python3 claude-subscription-usage.py --verbose
+
+# Full output (includes raw data)
+python3 claude-subscription-usage.py --full
+```
+
+**Example Output:**
+```
+================================================================================
+CLAUDE CODE USAGE SUMMARY
+================================================================================
+Current session               : ██                                                 4% used
+Current week (all models)     : ███                                                7% used
+Current week (Opus)           :                                                    0% used
+
+--------------------------------------------------------------------------------
+RESET TIMES:
+--------------------------------------------------------------------------------
+  Session resets: 4pm (America/Los_Angeles)
+  Weekly resets:  Nov 18, 3pm (America/Los_Angeles)
+================================================================================
+```
+
+**Compact Output:**
+```
+session:4
+week_all:7
+week_opus:0
+```
+
 ### claude-tray-indicator.py
 
 - **Real-time Display**: Shows current day's token usage in system tray
@@ -60,6 +113,15 @@ python3 claude-usage.py --monitor 1800  # Refresh every 30 minutes
 **For claude-usage.py:**
 - Python 3.6+
 - No additional dependencies (uses standard library only)
+
+**For claude-subscription-usage.py:**
+- Python 3.6+
+- `pexpect` library for terminal automation
+- Active Claude Code subscription (Claude Max)
+
+```bash
+pip install pexpect
+```
 
 **For claude-tray-indicator.py:**
 - Python 3.6+
@@ -113,6 +175,26 @@ nohup ~/playground/claude-experimental/claude-tray-indicator.py &
 - The indicator will start automatically on your next login
 
 ## Usage
+
+### Subscription Usage Checker
+
+Get your current Claude Max subscription usage:
+
+```bash
+# Quick summary
+./claude-subscription-usage.py
+
+# For automation/scripting
+./claude-subscription-usage.py --compact
+```
+
+The tool spawns a Claude Code session, executes `/usage`, and captures the output. This takes ~10-15 seconds to complete.
+
+**Use Cases:**
+- Monitor subscription quota programmatically
+- Integration with monitoring systems
+- Automated alerts when approaching limits
+- Logging usage trends over time
 
 ### Tray Indicator
 
@@ -365,12 +447,18 @@ rm ~/playground/claude-experimental/claude-usage-indicator.desktop
 
 ## Technical Details
 
-### Data Source
+### Data Sources
 
-Both tools read usage data from `~/.claude/projects/**/*.jsonl`, which contains Claude Code API usage logs. Each JSONL entry includes:
+**Token-based tools** (`claude-usage.py` and `claude-tray-indicator.py`) read usage data from `~/.claude/projects/**/*.jsonl`, which contains Claude Code API usage logs. Each JSONL entry includes:
 - Timestamp (ISO format, UTC)
 - Model information
 - Token usage (input, output, cache creation, cache read)
+
+**Subscription usage tool** (`claude-subscription-usage.py`) queries the live Claude Code CLI by:
+- Spawning an interactive Claude Code session using `pexpect`
+- Sending the `/usage` command
+- Capturing the subscription quota display
+- Parsing percentages and reset times from the output
 
 ### Architecture
 
@@ -379,6 +467,13 @@ Both tools read usage data from `~/.claude/projects/**/*.jsonl`, which contains 
 - Time-series data bucketed into 1-hour intervals
 - ASCII visualization using ANSI color codes
 - Automatic local timezone conversion
+
+**claude-subscription-usage.py:**
+- Uses `pexpect` for terminal automation
+- Creates a pseudo-terminal (PTY) for Claude Code interaction
+- Waits for UI rendering before capturing output
+- Strips ANSI codes for clean parsing
+- Takes ~10-15 seconds per execution
 
 **claude-tray-indicator.py:**
 - GTK3-based system tray application

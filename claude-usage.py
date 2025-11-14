@@ -9,6 +9,114 @@ import sys
 import argparse
 import time
 import select
+import re
+
+
+def get_subscription_usage():
+    """
+    Get Claude Code subscription usage by spawning a claude session.
+    Returns usage data dict or None if pexpect is not available or fetch fails.
+    """
+    try:
+        import pexpect
+    except ImportError:
+        return None
+
+    try:
+        # Spawn with dimensions set to ensure proper rendering
+        child = pexpect.spawn('claude', encoding='utf-8', timeout=60)
+        child.setwinsize(50, 120)  # rows, cols
+
+        # Wait for initialization
+        time.sleep(4)
+
+        # Read any initial output
+        try:
+            while True:
+                child.expect(r'.+', timeout=0.5)
+        except pexpect.TIMEOUT:
+            pass
+
+        # Send the /usage command
+        child.send('/usage')
+        time.sleep(0.5)
+        child.send('\r')
+
+        # Wait for usage display to render
+        time.sleep(6)
+
+        # Collect the usage output
+        usage_output = ""
+        try:
+            while True:
+                child.expect(r'.+', timeout=1)
+                usage_output += child.after
+        except pexpect.TIMEOUT:
+            pass
+
+        # Exit cleanly
+        child.send('/exit\n')
+        time.sleep(1)
+        try:
+            child.expect(pexpect.EOF, timeout=3)
+        except:
+            child.close(force=True)
+
+        # Strip ANSI codes
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        clean_output = ansi_escape.sub('', usage_output)
+
+        # Extract data
+        percentages = re.findall(r'(\d+)%\s+used', clean_output)
+        reset_times = re.findall(r'Resets\s+(.+)', clean_output)
+
+        if not percentages:
+            return None
+
+        return {
+            'session_pct': int(percentages[0]) if len(percentages) > 0 else 0,
+            'week_all_pct': int(percentages[1]) if len(percentages) > 1 else 0,
+            'week_opus_pct': int(percentages[2]) if len(percentages) > 2 else 0,
+            'session_reset': reset_times[0] if len(reset_times) > 0 else 'Unknown',
+            'week_reset': reset_times[1] if len(reset_times) > 1 else 'Unknown'
+        }
+    except Exception:
+        return None
+
+
+def print_subscription_usage_table(usage_data):
+    """
+    Print subscription usage information in a 5-line table format, with reset info below.
+    """
+    TABLE_WIDTH = 90
+
+    if not usage_data:
+        # Print error table if no data
+        print("="*TABLE_WIDTH)
+        print("Current session               :                                              | N/A    |")
+        print("Current week (all models)     :                                              | N/A    |")
+        print("Current week (Opus)           :                                              | N/A    |")
+        print("="*TABLE_WIDTH)
+        print("Session resets: N/A")
+        print("Weekly resets:  N/A")
+        return
+
+    # Create progress bars (47 chars max)
+    def make_bar(pct):
+        filled = int(pct * 47 / 100)
+        return "█" * filled
+
+    session_bar = make_bar(usage_data['session_pct'])
+    week_all_bar = make_bar(usage_data['week_all_pct'])
+    week_opus_bar = make_bar(usage_data['week_opus_pct'])
+
+    print("="*TABLE_WIDTH)
+    print(f"Current session               : {session_bar:<47}| {usage_data['session_pct']:>2}% used|")
+    print(f"Current week (all models)     : {week_all_bar:<47}| {usage_data['week_all_pct']:>2}% used|")
+    print(f"Current week (Opus)           : {week_opus_bar:<47}| {usage_data['week_opus_pct']:>2}% used|")
+    print("="*TABLE_WIDTH)
+    print(f"Session resets: {usage_data['session_reset']}")
+    print(f"Weekly resets:  {usage_data['week_reset']}")
 
 
 def get_claude_dir():
@@ -861,11 +969,16 @@ def main():
         breakdown_time_series = calculate_token_breakdown_time_series(filtered_usage_data, interval_hours=1)
 
         # Print two separate charts: I/O tokens and Cache tokens
-        # Each with half the original height (40 instead of 80)
-        print_stacked_bar_chart(breakdown_time_series, height=40, days_back=args.days,
+        # Each with reduced height (36 instead of 40) to make room for subscription usage table
+        print_stacked_bar_chart(breakdown_time_series, height=36, days_back=args.days,
                                 chart_type='io', show_x_axis=False)
-        print_stacked_bar_chart(breakdown_time_series, height=40, days_back=args.days,
+        print_stacked_bar_chart(breakdown_time_series, height=36, days_back=args.days,
                                 chart_type='cache', show_x_axis=True)
+
+        # Print subscription usage information
+        print()
+        usage_data = get_subscription_usage()
+        print_subscription_usage_table(usage_data)
 
         print()
         return True
