@@ -85,30 +85,33 @@ def get_subscription_usage():
         return None
 
 
-def parse_reset_time_and_calculate_remaining(reset_str):
+def parse_reset_time_and_calculate_remaining(reset_str, period_duration_minutes):
     """
     Parse reset time string and calculate time remaining until reset.
 
     Args:
         reset_str: String like "4pm (America/Los_Angeles)" or "Nov 18, 3pm (America/Los_Angeles)"
+        period_duration_minutes: Total duration of the period in minutes (e.g., 300 for 5 hours, 10080 for 7 days)
 
     Returns:
-        Formatted string like "XX day(s) XX hr(s) XX min(s)" or None if parsing fails
+        Tuple of (formatted_string, time_elapsed_pct) or (None, None) if parsing fails
+        formatted_string: like "XX day(s) XX hr(s) XX min(s)"
+        time_elapsed_pct: percentage of time elapsed (0-100)
     """
     if not reset_str or reset_str == 'Unknown' or reset_str == 'N/A':
-        return None
+        return None, None
 
     try:
         # Extract timezone from parentheses
         tz_match = re.search(r'\(([^)]+)\)', reset_str)
         if not tz_match:
-            return None
+            return None, None
 
         tz_name = tz_match.group(1)
         try:
             tz = zoneinfo.ZoneInfo(tz_name)
         except:
-            return None
+            return None, None
 
         # Get current time in that timezone
         now = datetime.now(tz)
@@ -170,10 +173,18 @@ def parse_reset_time_and_calculate_remaining(reset_str):
             parts.append(f"{hours} hr(s)")
         parts.append(f"{minutes} min(s)")
 
-        return " ".join(parts)
+        # Calculate time elapsed percentage
+        time_remaining_minutes = total_seconds / 60
+        time_elapsed_minutes = period_duration_minutes - time_remaining_minutes
+        time_elapsed_pct = (time_elapsed_minutes / period_duration_minutes) * 100
+
+        # Ensure percentage is between 0 and 100
+        time_elapsed_pct = max(0, min(100, time_elapsed_pct))
+
+        return " ".join(parts), time_elapsed_pct
 
     except Exception:
-        return None
+        return None, None
 
 
 def print_subscription_usage_table(usage_data):
@@ -209,21 +220,39 @@ def print_subscription_usage_table(usage_data):
     print("="*TABLE_WIDTH)
     print()
 
-    # Print session reset with time remaining
+    # Print session reset with time remaining and predictions
+    # Session duration: 5 hours = 300 minutes
+    SESSION_DURATION_MINUTES = 300
     session_reset_str = usage_data['session_reset']
-    time_remaining = parse_reset_time_and_calculate_remaining(session_reset_str)
+    time_remaining, time_elapsed_pct = parse_reset_time_and_calculate_remaining(session_reset_str, SESSION_DURATION_MINUTES)
     print(f"Session resets at: {session_reset_str}")
     if time_remaining:
-        print(f"                   └─ Resets in {time_remaining}")
+        # Calculate predicted token consumption
+        session_usage_pct = usage_data['session_pct']
+        if time_elapsed_pct > 0:
+            predicted_pct = (session_usage_pct / time_elapsed_pct) * 100
+        else:
+            predicted_pct = 0
+
+        print(f"                   └─ Resets in {time_remaining}, {time_elapsed_pct:.1f}% time passed, {predicted_pct:.1f}% token usage predicated")
 
     print()
 
-    # Print weekly reset with time remaining
+    # Print weekly reset with time remaining and predictions
+    # Weekly duration: 7 days = 168 hours = 10080 minutes
+    WEEKLY_DURATION_MINUTES = 10080
     week_reset_str = usage_data['week_reset']
-    time_remaining = parse_reset_time_and_calculate_remaining(week_reset_str)
+    time_remaining, time_elapsed_pct = parse_reset_time_and_calculate_remaining(week_reset_str, WEEKLY_DURATION_MINUTES)
     print(f"Weekly resets at:  {week_reset_str}")
     if time_remaining:
-        print(f"                   └─ Resets in {time_remaining}")
+        # Calculate predicted token consumption
+        week_usage_pct = usage_data['week_all_pct']
+        if time_elapsed_pct > 0:
+            predicted_pct = (week_usage_pct / time_elapsed_pct) * 100
+        else:
+            predicted_pct = 0
+
+        print(f"                   └─ Resets in {time_remaining}, {time_elapsed_pct:.1f}% time passed, {predicted_pct:.1f}% token usage predicated")
 
 
 def get_claude_dir():
@@ -490,7 +519,7 @@ def format_total_value(value):
         return f"{int(value)}"
 
 
-def print_stacked_bar_chart(time_series, height=80, days_back=7, chart_type='all', show_x_axis=True):
+def print_stacked_bar_chart(time_series, height=75, days_back=7, chart_type='all', show_x_axis=True):
     """Print a text-based stacked bar chart of token usage breakdown over time.
 
     Args:
@@ -573,13 +602,16 @@ def print_stacked_bar_chart(time_series, height=80, days_back=7, chart_type='all
     max_value_raw = max(totals) if totals else 1
     min_value_raw = min(totals) if totals else 0
 
-    # Round min/max to nearest multiple of 5K or 5M
+    # Round min/max to nearest multiple of 5K or 5M or 5B
     def round_to_5_multiple(value, round_up=True):
-        """Round value to nearest multiple of 5K or 5M."""
-        if value >= 1_000_000:
+        """Round value to nearest multiple of 5B/5M/5K."""
+        if value >= 5_000_000_000:
+            # Round to nearest 5B
+            unit = 5_000_000_000
+        elif value >= 5_000_000:
             # Round to nearest 5M
             unit = 5_000_000
-        elif value >= 1_000:
+        elif value >= 5_000:
             # Round to nearest 5K
             unit = 5_000
         else:
@@ -857,7 +889,7 @@ def print_stacked_bar_chart(time_series, height=80, days_back=7, chart_type='all
         print(f"Legend: \033[38;5;51m█\033[0m Input  \033[38;5;46m▓\033[0m Output  █ Cache Input  \033[38;5;214m▒\033[0m Cache Output")
 
 
-def print_model_chart(time_series, width=100, height=20):
+def print_model_chart(time_series, width=100, height=15):
     """Print a text-based chart showing each model's usage over time."""
     if not time_series:
         print("No time series data available.")
@@ -1076,10 +1108,10 @@ def main():
         breakdown_time_series = calculate_token_breakdown_time_series(filtered_usage_data, interval_hours=1)
 
         # Print two separate charts: I/O tokens and Cache tokens
-        # Each with reduced height (36 instead of 40) to make room for subscription usage table
-        print_stacked_bar_chart(breakdown_time_series, height=36, days_back=args.days,
+        # Each with reduced height (31 instead of 36) to make room for subscription usage table
+        print_stacked_bar_chart(breakdown_time_series, height=31, days_back=args.days,
                                 chart_type='io', show_x_axis=False)
-        print_stacked_bar_chart(breakdown_time_series, height=36, days_back=args.days,
+        print_stacked_bar_chart(breakdown_time_series, height=31, days_back=args.days,
                                 chart_type='cache', show_x_axis=True)
 
         # Print subscription usage information
