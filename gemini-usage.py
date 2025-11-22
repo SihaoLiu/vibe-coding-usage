@@ -261,8 +261,16 @@ def format_total_value(value):
         return f"{int(value)}"
 
 
-def print_stacked_bar_chart(time_series, height=75, days_back=7, show_x_axis=True):
-    """Print a text-based stacked bar chart of token usage breakdown over time."""
+def print_stacked_bar_chart(time_series, height=75, days_back=7, chart_type='all', show_x_axis=True):
+    """Print a text-based stacked bar chart of token usage breakdown over time.
+
+    Args:
+        time_series: Time series data with token breakdown
+        height: Height of the chart
+        days_back: Number of days to show
+        chart_type: 'all' (all 5 types), 'ict' (input+cached+tool), or 'ot' (output+thoughts)
+        show_x_axis: Whether to show X-axis labels
+    """
     if not time_series:
         print("No time series data available.")
         return
@@ -319,7 +327,14 @@ def print_stacked_bar_chart(time_series, height=75, days_back=7, show_x_axis=Tru
             'tool': tool_val
         })
 
-        total = input_val + output_val + cached_val + thoughts_val + tool_val
+        # Calculate total based on chart_type
+        if chart_type == 'ict':
+            total = input_val + cached_val + tool_val
+        elif chart_type == 'ot':
+            total = output_val + thoughts_val
+        else:  # 'all'
+            total = input_val + output_val + cached_val + thoughts_val + tool_val
+
         totals.append(total)
 
     # Calculate Y-axis range
@@ -357,8 +372,16 @@ def print_stacked_bar_chart(time_series, height=75, days_back=7, show_x_axis=Tru
     num_data_points = len(totals)
     chart_height = height
 
-    print("\nToken Usage Breakdown Over Time (1-hour intervals, Local Time)")
-    print(f"Y-axis: Token consumption (all token types)")
+    # Print chart title based on type
+    if chart_type == 'ict':
+        print("\nInput + Cached + Tool Tokens Over Time (1-hour intervals, Local Time)")
+        print(f"Y-axis: Input, Cached, and Tool token consumption")
+    elif chart_type == 'ot':
+        print("\nOutput + Thoughts Tokens Over Time (1-hour intervals, Local Time)")
+        print(f"Y-axis: Output and Thoughts token consumption")
+    else:
+        print("\nToken Usage Breakdown Over Time (1-hour intervals, Local Time)")
+        print(f"Y-axis: Token consumption (all token types)")
 
     if show_x_axis:
         print(f"X-axis: Time (each day has 24 data points, ticks at 6-hour intervals)\n")
@@ -510,19 +533,44 @@ def print_stacked_bar_chart(time_series, height=75, days_back=7, show_x_axis=Tru
                 cumulative_thoughts = cumulative_cached + thoughts_height
                 cumulative_tool = cumulative_thoughts + tool_height
 
-                # Determine which character to draw
-                if row < cumulative_input:
-                    line += "\033[38;5;51m█\033[0m"  # Input tokens (Bright Cyan)
-                elif row < cumulative_output:
-                    line += "\033[38;5;46m▓\033[0m"  # Output tokens (Bright Green)
-                elif row < cumulative_cached:
-                    line += "\033[38;5;214m▒\033[0m"  # Cached tokens (Bright Orange)
-                elif row < cumulative_thoughts:
-                    line += "\033[38;5;201m░\033[0m"  # Thoughts tokens (Bright Magenta)
-                elif row < cumulative_tool:
-                    line += "\033[38;5;226m■\033[0m"  # Tool tokens (Bright Yellow)
+                # Determine which character to draw based on chart_type
+                if chart_type == 'ict':
+                    # Only show input, cached, and tool
+                    ict_cumulative_input = input_height
+                    ict_cumulative_cached = ict_cumulative_input + cached_height
+                    ict_cumulative_tool = ict_cumulative_cached + tool_height
+                    if row < ict_cumulative_input:
+                        line += "\033[38;5;51m█\033[0m"  # Input tokens (Bright Cyan)
+                    elif row < ict_cumulative_cached:
+                        line += "\033[38;5;214m▒\033[0m"  # Cached tokens (Bright Orange)
+                    elif row < ict_cumulative_tool:
+                        line += "\033[38;5;226m■\033[0m"  # Tool tokens (Bright Yellow)
+                    else:
+                        line += " "  # Empty space
+                elif chart_type == 'ot':
+                    # Only show output and thoughts
+                    ot_cumulative_output = output_height
+                    ot_cumulative_thoughts = ot_cumulative_output + thoughts_height
+                    if row < ot_cumulative_output:
+                        line += "\033[38;5;46m▓\033[0m"  # Output tokens (Bright Green)
+                    elif row < ot_cumulative_thoughts:
+                        line += "\033[38;5;201m░\033[0m"  # Thoughts tokens (Bright Magenta)
+                    else:
+                        line += " "  # Empty space
                 else:
-                    line += " "  # Empty space
+                    # Show all 5 types
+                    if row < cumulative_input:
+                        line += "\033[38;5;51m█\033[0m"  # Input tokens (Bright Cyan)
+                    elif row < cumulative_output:
+                        line += "\033[38;5;46m▓\033[0m"  # Output tokens (Bright Green)
+                    elif row < cumulative_cached:
+                        line += "\033[38;5;214m▒\033[0m"  # Cached tokens (Bright Orange)
+                    elif row < cumulative_thoughts:
+                        line += "\033[38;5;201m░\033[0m"  # Thoughts tokens (Bright Magenta)
+                    elif row < cumulative_tool:
+                        line += "\033[38;5;226m■\033[0m"  # Tool tokens (Bright Yellow)
+                    else:
+                        line += " "  # Empty space
 
         print(y_label + line)
 
@@ -740,7 +788,13 @@ def main():
 
         # Calculate and print token breakdown time series
         breakdown_time_series = calculate_token_breakdown_time_series(filtered_usage_data, interval_hours=1)
-        print_stacked_bar_chart(breakdown_time_series, height=75, days_back=args.days, show_x_axis=True)
+
+        # Print two separate charts: Input+Cached+Tool and Output+Thoughts
+        # First chart without X-axis, second chart with X-axis
+        print_stacked_bar_chart(breakdown_time_series, height=37, days_back=args.days,
+                                chart_type='ict', show_x_axis=False)
+        print_stacked_bar_chart(breakdown_time_series, height=37, days_back=args.days,
+                                chart_type='ot', show_x_axis=True)
 
         print()
         return True
