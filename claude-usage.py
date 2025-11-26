@@ -101,6 +101,12 @@ def get_subscription_usage():
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         clean_output = ansi_escape.sub('', usage_output)
 
+        # Check for authentication errors
+        if 'permission_error' in clean_output or 'OAuth token does not meet scope requirement' in clean_output:
+            return {'error': 'auth', 'message': 'OAuth token missing required scope. Please re-authenticate: claude logout && claude login'}
+        if 'Failed to load usage data' in clean_output:
+            return {'error': 'load', 'message': 'Failed to load usage data from Claude API'}
+
         # Extract data
         # The output shows "X% used"
         percentages_used = re.findall(r'(\d+)%\s+used', clean_output)
@@ -110,7 +116,7 @@ def get_subscription_usage():
         reset_times = [t.strip().rstrip('\r') for t in reset_times_raw]
 
         if not percentages:
-            return None
+            return {'error': 'parse', 'message': 'Could not parse usage data from output'}
 
         return {
             'session_pct': percentages[0] if len(percentages) > 0 else 0,
@@ -119,8 +125,8 @@ def get_subscription_usage():
             'session_reset': reset_times[0] if len(reset_times) > 0 else 'Unknown',
             'week_reset': reset_times[1] if len(reset_times) > 1 else 'Unknown'
         }
-    except Exception:
-        return None
+    except Exception as e:
+        return {'error': 'exception', 'message': f'Failed to fetch subscription usage: {str(e)}'}
 
 
 def parse_reset_time_and_calculate_remaining(reset_str, period_duration_minutes):
@@ -242,6 +248,17 @@ def print_subscription_usage_table(usage_data):
         print("="*TABLE_WIDTH)
         print("Session resets: N/A")
         print("Weekly resets:  N/A")
+        return
+
+    # Check if usage_data contains an error
+    if isinstance(usage_data, dict) and 'error' in usage_data:
+        print("="*TABLE_WIDTH)
+        print("Current session               :                                              | ERROR  |")
+        print("Current week (all models)     :                                              | ERROR  |")
+        print("Current week (Sonnet)         :                                              | ERROR  |")
+        print("="*TABLE_WIDTH)
+        print(f"\nError: {usage_data['message']}")
+        print()
         return
 
     # Create progress bars (47 chars max)
