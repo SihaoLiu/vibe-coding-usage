@@ -1,91 +1,52 @@
 """Subscription usage functions for Claude Code usage analysis."""
 
-import time
 import re
 from datetime import datetime, timedelta
 import zoneinfo
 
 from constants import SESSION_DURATION_MINUTES, WEEKLY_DURATION_MINUTES
+from get_usage import get_usage, UsageReport
 
 
 def get_subscription_usage():
     """
     Get Claude Code subscription usage by spawning a claude session.
-    Returns usage data dict or None if pexpect is not available or fetch fails.
+    Returns usage data dict or None if fetch fails.
+
+    Uses get_usage.py to spawn an interactive session and parse /usage output.
     """
     try:
-        import pexpect
-    except ImportError:
-        return None
+        report = get_usage()
 
-    try:
-        # Spawn with dimensions set to ensure proper rendering
-        child = pexpect.spawn('claude', encoding='utf-8', timeout=60)
-        child.setwinsize(50, 120)  # rows, cols
+        if not report.entries:
+            return {'error': 'parse', 'message': 'No usage entries found in /usage output'}
 
-        # Wait for initialization
-        time.sleep(4)
-
-        # Read any initial output
-        try:
-            while True:
-                child.expect(r'.+', timeout=0.5)
-        except pexpect.TIMEOUT:
-            pass
-
-        # Send the /usage command
-        child.send('/usage')
-        time.sleep(0.5)
-        child.send('\r')
-
-        # Wait for usage display to render
-        time.sleep(6)
-
-        # Collect the usage output
-        usage_output = ""
-        try:
-            while True:
-                child.expect(r'.+', timeout=1)
-                usage_output += child.after
-        except pexpect.TIMEOUT:
-            pass
-
-        # Exit cleanly
-        child.send('/exit\n')
-        time.sleep(1)
-        try:
-            child.expect(pexpect.EOF, timeout=3)
-        except:
-            child.close(force=True)
-
-        # Strip ANSI codes
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        clean_output = ansi_escape.sub('', usage_output)
-
-        # Check for authentication errors
-        if 'permission_error' in clean_output or 'OAuth token does not meet scope requirement' in clean_output:
-            return {'error': 'auth', 'message': 'OAuth token missing required scope. Please re-authenticate: claude logout && claude login'}
-        if 'Failed to load usage data' in clean_output:
-            return {'error': 'load', 'message': 'Failed to load usage data from Claude API'}
-
-        # Extract data
-        # The output shows "X% used"
-        percentages_used = re.findall(r'(\d+)%\s+used', clean_output)
-        percentages = [int(p) for p in percentages_used]
-        reset_times_raw = re.findall(r'Resets\s+(.+)', clean_output)
-        # Clean up carriage returns from reset times
-        reset_times = [t.strip().rstrip('\r') for t in reset_times_raw]
-
-        if not percentages:
-            return {'error': 'parse', 'message': 'Could not parse usage data from output'}
-
-        return {
-            'session_pct': percentages[0] if len(percentages) > 0 else 0,
-            'week_all_pct': percentages[1] if len(percentages) > 1 else 0,
-            'week_sonnet_pct': percentages[2] if len(percentages) > 2 else 0,
-            'session_reset': reset_times[0] if len(reset_times) > 0 else 'Unknown',
-            'week_reset': reset_times[1] if len(reset_times) > 1 else 'Unknown'
+        # Map entries to the expected format
+        # Expected entries: "Current session", "Current week (all models)", "Current week (Sonnet only)"
+        result = {
+            'session_pct': 0,
+            'week_all_pct': 0,
+            'week_sonnet_pct': 0,
+            'session_reset': 'Unknown',
+            'week_reset': 'Unknown'
         }
+
+        for entry in report.entries:
+            name_lower = entry.name.lower()
+            reset_str = f"{entry.reset_time} ({entry.reset_timezone})" if entry.reset_time else 'Unknown'
+
+            if 'session' in name_lower:
+                result['session_pct'] = entry.percentage
+                result['session_reset'] = reset_str
+            elif 'week' in name_lower and 'all' in name_lower:
+                result['week_all_pct'] = entry.percentage
+                result['week_reset'] = reset_str
+            elif 'week' in name_lower and 'sonnet' in name_lower:
+                result['week_sonnet_pct'] = entry.percentage
+                # Week reset time is the same for both weekly entries
+
+        return result
+
     except Exception as e:
         return {'error': 'exception', 'message': f'Failed to fetch subscription usage: {str(e)}'}
 
